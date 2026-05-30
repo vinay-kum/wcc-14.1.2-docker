@@ -28,4 +28,5 @@ echo ">> Running WLST to create domain ${DOMAIN_NAME} at ${DOMAIN_HOME}"
 "${WLST}" -skipWLSModuleScanning /opt/wcc/wlst/create-wcc-domain.py
 
 echo ">> Domain created. Tree:"
+# shellcheck disable=SC2012  # ls is fine for human-readable output here
 ls -la "${DOMAIN_HOME}" | head -20
