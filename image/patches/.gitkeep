@@ -1,0 +1,3 @@
+# This file just keeps the patches/ directory in git.
+# Actual Oracle patch zips MUST NEVER be committed — they are license-restricted
+# binaries. .gitignore in the repo root excludes *.zip and *.jar globally.
