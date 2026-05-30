@@ -1,0 +1,30 @@
+# Local secrets / config
+.env
+.env.local
+*.local
+
+# Oracle installer binaries (large, license-restricted — must never be committed)
+binaries/
+*.jar
+*.zip
+*.bin
+*.rsp
+
+# Generated domain state (created at runtime inside volumes — keep out of git)
+domain/
+shared/
+oradata/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code local state
+.claude/
+
+# Build artifacts
+*.log
+logs/

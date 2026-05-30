@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: |
+          cp .env.example .env
+          # placeholder so interpolation doesn't fail validation
+          sed -i 's|webcenter-content_cpu:14.1.2.0.0-<TAG>|webcenter-content_cpu:14.1.2.0.0-placeholder|' .env
+          docker compose config > /dev/null
+
+      - name: Shellcheck scripts
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: ./scripts
+
+      - name: Markdown lint
+        uses: DavidAnson/markdownlint-cli2-action@v15
+        with:
+          globs: |
+            README.md
+            docs/**/*.md

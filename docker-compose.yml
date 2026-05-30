@@ -1,0 +1,156 @@
+# Oracle WebCenter Content 14.1.2 + Oracle AI Database 26ai Free
+# Local playground via docker-compose.
+#
+# Read docs/03-quickstart.md before running. You must:
+#   1. docker login container-registry.oracle.com (Oracle SSO)
+#   2. Accept license at container-registry.oracle.com for `database/free`
+#      AND `middleware/webcenter-content_cpu` (one-time, per Oracle SSO account)
+#   3. cp .env.example .env  and edit (especially WCC_IMAGE tag)
+#
+# Flow on `docker compose up`:
+#   db (healthy) -> wcc-rcu (run-once) -> wcc-domain-init (run-once) -> wcc-admin -> wcc-ucm
+#
+# Tear down with `./scripts/teardown.sh` (or `docker compose down -v` to wipe volumes).
+
+name: wcc14
+
+x-wcc-common: &wcc-common
+  image: ${WCC_IMAGE}
+  # WCC images are linux/amd64 only. On Apple Silicon this runs under emulation (slow).
+  platform: ${WCC_PLATFORM:-linux/amd64}
+  environment:
+    DOMAIN_NAME: ${DOMAIN_NAME}
+    DOMAIN_HOME: /u01/oracle/user_projects/domains/${DOMAIN_NAME}
+    ADMIN_USERNAME: ${ADMIN_USERNAME}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    DB_CONNECTION_STRING: ${DB_CONNECTION_STRING}
+    RCU_PREFIX: ${RCU_PREFIX}
+    RCU_SCHEMA_PASSWORD: ${RCU_SCHEMA_PASSWORD}
+    DB_SYS_PASSWORD: ${DB_SYS_PASSWORD}
+    PRODUCTION_MODE: ${PRODUCTION_MODE}
+  networks:
+    - wccnet
+
+services:
+  # ---------------------------------------------------------------------------
+  # Oracle AI Database 26ai Free
+  # ---------------------------------------------------------------------------
+  db:
+    image: ${DB_IMAGE}
+    container_name: wcc14-db
+    restart: unless-stopped
+    environment:
+      ORACLE_PWD: ${DB_SYS_PASSWORD}
+      ORACLE_CHARACTERSET: AL32UTF8
+    ports:
+      - "${DB_PORT}:1521"
+    volumes:
+      - oradata:/opt/oracle/oradata
+    networks:
+      - wccnet
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/oracle/checkDBStatus.sh || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+
+  # ---------------------------------------------------------------------------
+  # One-shot: create RCU schemas in the DB (CONTENT, MDS, STB, OPSS, IAU*, WLS).
+  # Exits 0 on success. Re-runs are idempotent only if RCU_DROP_AND_CREATE=true.
+  # ---------------------------------------------------------------------------
+  wcc-rcu:
+    <<: *wcc-common
+    container_name: wcc14-rcu
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/opt/wcc/scripts:ro
+    entrypoint: ["/bin/bash", "/opt/wcc/scripts/create-rcu-schemas.sh"]
+
+  # ---------------------------------------------------------------------------
+  # One-shot: create the WCC WebLogic domain on the shared volume.
+  # Runs WLST against templates packaged inside the WCC image.
+  # ---------------------------------------------------------------------------
+  wcc-domain-init:
+    <<: *wcc-common
+    container_name: wcc14-domain-init
+    restart: "no"
+    depends_on:
+      wcc-rcu:
+        condition: service_completed_successfully
+    volumes:
+      - wcc-domain:/u01/oracle/user_projects
+      - ./scripts:/opt/wcc/scripts:ro
+      - ./config/wlst:/opt/wcc/wlst:ro
+    entrypoint: ["/bin/bash", "/opt/wcc/scripts/create-domain.sh"]
+
+  # ---------------------------------------------------------------------------
+  # WebLogic AdminServer (long-running)
+  # ---------------------------------------------------------------------------
+  wcc-admin:
+    <<: *wcc-common
+    container_name: wcc14-admin
+    restart: unless-stopped
+    depends_on:
+      wcc-domain-init:
+        condition: service_completed_successfully
+    ports:
+      - "${ADMIN_PORT}:7001"
+    volumes:
+      - wcc-domain:/u01/oracle/user_projects
+      - wcc-shared:/u01/oracle/shared
+    command:
+      - /bin/bash
+      - -c
+      - |
+        DH=/u01/oracle/user_projects/domains/${DOMAIN_NAME}
+        echo "Starting AdminServer from $$DH"
+        exec "$$DH/startWebLogic.sh"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7001/weblogic/ready || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 30
+      start_period: 240s
+
+  # ---------------------------------------------------------------------------
+  # UCM ManagedServer (Content Server)
+  # ---------------------------------------------------------------------------
+  wcc-ucm:
+    <<: *wcc-common
+    container_name: wcc14-ucm
+    restart: unless-stopped
+    depends_on:
+      wcc-admin:
+        condition: service_healthy
+    ports:
+      - "${UCM_PORT}:16200"
+      - "${UCM_INTRADOC_PORT}:4444"
+    volumes:
+      - wcc-domain:/u01/oracle/user_projects
+      - wcc-shared:/u01/oracle/shared
+    command:
+      - /bin/bash
+      - -c
+      - |
+        DH=/u01/oracle/user_projects/domains/${DOMAIN_NAME}
+        echo "Starting UCM_server1 via $$DH/bin/startManagedWebLogic.sh"
+        exec "$$DH/bin/startManagedWebLogic.sh" UCM_server1 "t3://wcc-admin:7001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:16200/cs/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
+
+volumes:
+  oradata:
+  wcc-domain:
+  wcc-shared:
+
+networks:
+  wccnet:
+    driver: bridge
