@@ -6,7 +6,7 @@ on Apple Silicon under emulation.
 ## 0. Prereqs
 
 You've done [01-prerequisites.md](01-prerequisites.md):
-- Oracle SSO + license acceptance for `database/free` and `middleware/webcenter-content_cpu`
+- Oracle SSO + license acceptance for `database/free` and `middleware/webcenter-content`
 - `docker login container-registry.oracle.com`
 - 24 GB RAM, 60 GB disk free
 - You've copied a current WCC image tag from the registry page
@@ -17,13 +17,10 @@ You've done [01-prerequisites.md](01-prerequisites.md):
 cp .env.example .env
 ```
 
-Edit `.env`. The one value you MUST change:
-
-```bash
-WCC_IMAGE=container-registry.oracle.com/middleware/webcenter-content_cpu:14.1.2.0.0-<TAG>
-#                                                                          ^^^^^
-#                                                          replace with current dated tag
-```
+`.env.example` ships with a known-working tag pinned (currently
+`14.1.2.0-jdk21-ol9-241205`). Oracle rotates these dated tags periodically;
+if the pinned one fails with `manifest unknown`, refresh it from the
+registry page and edit `WCC_IMAGE` in your local `.env`.
 
 Optionally change passwords (defaults are intentionally weak — fine for
 disposable playgrounds, not for anything else).
@@ -40,7 +37,7 @@ docker pull "${WCC_IMAGE}"
 ```
 
 If the WCC pull fails with `unauthorized`, you haven't accepted the
-`webcenter-content_cpu` license at <https://container-registry.oracle.com>.
+`webcenter-content` license at <https://container-registry.oracle.com>.
 
 ## 3. Bring it up
 

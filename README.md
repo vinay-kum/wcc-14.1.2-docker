@@ -35,7 +35,7 @@ learning the WCC + WebLogic stack without standing up Kubernetes.
 
 ```bash
 # 1. One-time: accept Oracle license terms at
-#    https://container-registry.oracle.com (database/free + middleware/webcenter-content_cpu)
+#    https://container-registry.oracle.com (database/free + middleware/webcenter-content)
 docker login container-registry.oracle.com
 
 # 2. Configure

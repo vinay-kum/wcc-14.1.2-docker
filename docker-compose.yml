@@ -4,7 +4,7 @@
 # Read docs/03-quickstart.md before running. You must:
 #   1. docker login container-registry.oracle.com (Oracle SSO)
 #   2. Accept license at container-registry.oracle.com for `database/free`
-#      AND `middleware/webcenter-content_cpu` (one-time, per Oracle SSO account)
+#      AND `middleware/webcenter-content` (one-time, per Oracle SSO account)
 #   3. cp .env.example .env  and edit (especially WCC_IMAGE tag)
 #
 # Flow on `docker compose up`:

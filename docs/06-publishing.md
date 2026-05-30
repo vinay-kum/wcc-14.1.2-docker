@@ -57,7 +57,7 @@ If you want a single-image experience for your own team (private registry):
 
 ```dockerfile
 # Dockerfile.private — DO NOT push publicly
-FROM container-registry.oracle.com/middleware/webcenter-content_cpu:14.1.2.0.0-<TAG>
+FROM container-registry.oracle.com/middleware/webcenter-content:14.1.2.0-jdk21-ol9-241205
 COPY config/wlst /opt/wcc/wlst
 COPY scripts/   /opt/wcc/scripts
 # ... bake in domain creation if desired

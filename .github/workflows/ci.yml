@@ -14,8 +14,6 @@ jobs:
       - name: Validate docker-compose.yml
         run: |
           cp .env.example .env
-          # placeholder so interpolation doesn't fail validation
-          sed -i 's|webcenter-content_cpu:14.1.2.0.0-<TAG>|webcenter-content_cpu:14.1.2.0.0-placeholder|' .env
           docker compose config > /dev/null
 
       - name: Shellcheck scripts

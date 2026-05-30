@@ -33,7 +33,7 @@ repositories. This is **free** but **manual** (one-time, per SSO account):
 1. Go to <https://container-registry.oracle.com>
 2. Sign in with Oracle SSO
 3. Browse to **Database** → **free** → click **Continue** to accept terms
-4. Browse to **Middleware** → **webcenter-content_cpu** → click **Continue**
+4. Browse to **Middleware** → **webcenter-content** → click **Continue**
 
 ### Generate an Auth Token (required since June 2025)
 
@@ -65,7 +65,7 @@ token.
 Even with a valid Auth Token, `docker pull` returns
 `unauthorized: authentication required` until you've clicked **Continue**
 on the license page for *each* image repo (Database/free AND
-Middleware/webcenter-content_cpu — two separate clicks).
+Middleware/webcenter-content — two separate clicks).
 
 ## Find the current image tags
 
@@ -73,10 +73,10 @@ The `latest` tag is fine for the DB but **not** for WCC (Oracle publishes dated
 CPU tags and rotates them). Pin a specific tag in `.env`.
 
 - DB: <https://container-registry.oracle.com/ords/ocr/ba/database/free>
-- WCC: <https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content_cpu>
+- WCC: <https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content>
 
 Copy the tag from the registry page (e.g. `14.1.2.0.0-jdk17-ol8-260115`) into
-`.env` as `WCC_IMAGE=container-registry.oracle.com/middleware/webcenter-content_cpu:<tag>`.
+`.env` as `WCC_IMAGE=container-registry.oracle.com/middleware/webcenter-content:<tag>`.
 
 ## Local tools (optional but useful)
 

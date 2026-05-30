@@ -4,13 +4,13 @@
 
 You didn't accept the license for that image repo. Go to
 <https://container-registry.oracle.com>, sign in, browse to the repo
-(`database/free` or `middleware/webcenter-content_cpu`), click **Continue**
+(`database/free` or `middleware/webcenter-content`), click **Continue**
 to accept terms. Then retry `docker pull`.
 
 ## `manifest unknown` when pulling WCC
 
 The tag you put in `.env` is stale. Oracle rotates dated CPU tags. Refresh
-from <https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content_cpu>
+from <https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content>
 and update `WCC_IMAGE` in `.env`.
 
 ## DB healthcheck never goes healthy
