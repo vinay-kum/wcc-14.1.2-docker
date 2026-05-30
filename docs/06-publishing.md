@@ -58,9 +58,10 @@ If you want a single-image experience for your own team (private registry):
 ```dockerfile
 # Dockerfile.private — DO NOT push publicly
 FROM container-registry.oracle.com/middleware/webcenter-content:14.1.2.0-jdk21-ol9-241205
-COPY config/wlst /opt/wcc/wlst
-COPY scripts/   /opt/wcc/scripts
-# ... bake in domain creation if desired
+# Oracle's bundled bootstrap scripts already live in /u01/oracle/container-scripts/.
+# Bake in only what you need to override — for example a custom autoinstall.cfg.cs
+# or a wrapper around configureOrStartWebCenterContent.sh.
+COPY overrides/autoinstall.cfg.cs /u01/oracle/container-scripts/autoinstall.cfg.cs
 ```
 
 Push to a private registry (your org's Artifactory, ECR, GAR, ACR — all fine).

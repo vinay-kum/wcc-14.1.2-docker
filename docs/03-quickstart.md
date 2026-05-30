@@ -1,15 +1,16 @@
 # 03 — Quickstart
 
-End-to-end first run on a fresh host. Reckon ~20 min on Linux x86_64, 45+ min
-on Apple Silicon under emulation.
+End-to-end first run on a fresh host. Plan for ~20–25 min on Linux x86_64,
+~45–60 min on Apple Silicon under emulation.
 
 ## 0. Prereqs
 
 You've done [01-prerequisites.md](01-prerequisites.md):
+
 - Oracle SSO + license acceptance for `database/free` and `middleware/webcenter-content`
-- `docker login container-registry.oracle.com`
+- Auth Token generated at `container-registry.oracle.com`
+- `docker login container-registry.oracle.com` succeeds (using Auth Token, not SSO password)
 - 24 GB RAM, 60 GB disk free
-- You've copied a current WCC image tag from the registry page
 
 ## 1. Configure
 
@@ -17,27 +18,21 @@ You've done [01-prerequisites.md](01-prerequisites.md):
 cp .env.example .env
 ```
 
-`.env.example` ships with a known-working tag pinned (currently
-`14.1.2.0-jdk21-ol9-241205`). Oracle rotates these dated tags periodically;
-if the pinned one fails with `manifest unknown`, refresh it from the
-registry page and edit `WCC_IMAGE` in your local `.env`.
+`.env.example` ships with a known-working WCC tag and sensible defaults.
+You don't need to edit anything for a basic playground run. Optionally change
+the passwords (`DB_PASSWORD`, `DB_SCHEMA_PASSWORD`, `ADMIN_PASSWORD`).
 
-Optionally change passwords (defaults are intentionally weak — fine for
-disposable playgrounds, not for anything else).
+## 2. Pull images first (recommended)
 
-## 2. Pull images first (optional but useful)
-
-Pulling separately surfaces auth / license problems before the bootstrap flow
-starts and makes the first `up` faster to diagnose.
+Pulling separately surfaces auth / license problems before the bootstrap
+chain starts.
 
 ```bash
-source .env  # so env vars are in shell
-docker pull "${DB_IMAGE}"
-docker pull "${WCC_IMAGE}"
+docker compose pull
 ```
 
-If the WCC pull fails with `unauthorized`, you haven't accepted the
-`webcenter-content` license at <https://container-registry.oracle.com>.
+If WCC fails with `unauthorized`, you haven't accepted the license for
+`webcenter-content` in your browser at <https://container-registry.oracle.com>.
 
 ## 3. Bring it up
 
@@ -45,27 +40,38 @@ If the WCC pull fails with `unauthorized`, you haven't accepted the
 docker compose up -d
 ```
 
-This kicks off the chain: `db` → `wcc-rcu` → `wcc-domain-init` → `wcc-admin` → `wcc-ucm`.
+This chain runs:
+
+- `db` starts; healthcheck waits for the PDB to be open
+- `wcc-admin` starts; runs RCU against the DB, runs WLST to create the
+  domain on the `wcc-userprojects` volume, starts AdminServer in the foreground
+- `wcc-content` waits for `wcc-admin` to be healthy, then starts UCM_server1
+  + IBR_server1 against the shared domain volume
 
 ## 4. Watch the bootstrap
 
 ```bash
-# everything at once (recommended for first run)
+# Everything at once (good for first run)
 docker compose logs -f
 
-# or one at a time
+# Or focused:
 docker compose logs -f db          # wait for "DATABASE IS READY TO USE!"
-docker compose logs -f wcc-rcu     # exits 0 when schemas are created
-docker compose logs -f wcc-domain-init   # exits 0 when domain is written
 docker compose logs -f wcc-admin   # wait for "Server state changed to RUNNING"
-docker compose logs -f wcc-ucm     # wait for UCM_server1 "Server state changed to RUNNING"
+docker compose logs -f wcc-content # wait for UCM + IBR "RUNNING"
+
+# Status of all services
+docker compose ps
 ```
 
-Status of one-shot containers:
+Notable progress markers in `wcc-admin` logs:
 
-```bash
-docker compose ps -a
-# wcc-rcu and wcc-domain-init should show STATE=exited, EXITED=0
+```text
+WebCenter Content RCU Creation Phase   ← RCU starting
+Repository Creation Utility - Create : Operation Completed   ← RCU done
+Domain Configuration Phase             ← WLST starting
+END Domain Configuration Phase         ← WLST done
+Starting Node Manager                  ← server start
+Server state changed to RUNNING        ← AdminServer ready
 ```
 
 ## 5. Access the UIs
@@ -73,26 +79,26 @@ docker compose ps -a
 | URL | Login |
 |---|---|
 | <http://localhost:7001/console> | `weblogic` / value of `ADMIN_PASSWORD` |
-| <http://localhost:16200/cs> | `weblogic` / same |
+| <http://localhost:16200/cs> | same |
+| <http://localhost:16250/ibr> | same |
 
-On first hit, UCM (Content Server) shows a configuration wizard if the
-post-config step didn't complete during domain creation — follow the prompts;
-accept defaults. This is normal for a first-boot WCC instance.
+On first hit, UCM (Content Server) may show a configuration wizard if
+post-config didn't complete during domain creation — accept defaults.
 
 ## 6. Sanity-check the DB schemas
 
 ```bash
-docker compose exec db sqlplus -L sys/${DB_SYS_PASSWORD}@FREEPDB1 as sysdba <<SQL
+docker compose exec db sqlplus -L "sys/${DB_PASSWORD:-Welcome1_dbsys}@FREEPDB1 as sysdba" <<SQL
   SELECT username FROM dba_users WHERE username LIKE 'WCC1%' ORDER BY 1;
 SQL
 ```
 
-You should see `WCC1_OCS`, `WCC1_MDS`, `WCC1_STB`, `WCC1_OPSS`, `WCC1_IAU*`,
-`WCC1_WLS*`.
+You should see ~10 schemas (`WCC1_OCS`, `WCC1_MDS`, `WCC1_STB`, `WCC1_OPSS`,
+`WCC1_IAU*`, `WCC1_WLS*`).
 
 ## 7. Tear down
 
-Keep volumes (faster restart, retains content and schemas):
+Keep volumes (faster restart, retains content + schemas):
 
 ```bash
 docker compose down

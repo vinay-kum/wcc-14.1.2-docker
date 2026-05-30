@@ -3,78 +3,80 @@
 ## Container topology
 
 ```text
-                          ┌──────────────────────────┐
-                          │  Docker network: wccnet  │
-                          └──────────────────────────┘
-                                       │
-   ┌────────────────────┐    ┌─────────┴─────────┐    ┌────────────────────┐
-   │ db (26ai Free)     │    │ wcc-admin         │    │ wcc-ucm            │
-   │ 1521               │◄──►│ AdminServer 7001  │◄──►│ UCM_server1 16200  │
-   │ vol: oradata       │    │ vol: wcc-domain   │    │ vol: wcc-domain    │
-   │      /opt/oracle/  │    │      wcc-shared   │    │      wcc-shared    │
-   │      oradata       │    │ /u01/oracle/      │    │ /u01/oracle/       │
-   └────────────────────┘    │   user_projects   │    │   user_projects    │
-            ▲                └───────────────────┘    └────────────────────┘
-            │                          ▲
-            │                          │ (run-once, exits 0)
-   ┌────────┴──────────┐    ┌─────────┴─────────┐
-   │ wcc-rcu (init)    │───►│ wcc-domain-init   │
-   │ Runs RCU to       │    │ Runs WLST to      │
-   │ create schemas    │    │ build domain on   │
-   │ in DB             │    │ wcc-domain volume │
-   └───────────────────┘    └───────────────────┘
+                       ┌──────────────────────────┐
+                       │  Docker network: wccnet  │
+                       └──────────────────────────┘
+                                    │
+   ┌────────────────────┐   ┌──────┴──────────┐   ┌─────────────────────┐
+   │ db (26ai Free)     │   │ wcc-admin       │   │ wcc-content         │
+   │ :1521              │◄─►│ AdminServer     │◄─►│ UCM_server1 :16200  │
+   │ vol: oradata       │   │ :7001           │   │ IBR_server1 :16250  │
+   │  /opt/oracle/      │   │ vol:            │   │ vol:                │
+   │  oradata           │   │  wcc-userprojects│  │  wcc-userprojects   │
+   └────────────────────┘   │  /u01/oracle/   │   │  (shared with admin)│
+                            │  user_projects  │   └─────────────────────┘
+                            └─────────────────┘
 ```
 
 ## Bootstrap order
 
-Compose enforces this with `depends_on.condition`:
+Compose enforces ordering via `depends_on.condition`:
 
-1. `db` starts and runs its healthcheck until DB is open
-2. `wcc-rcu` runs once, calls `rcu -createRepository` against the DB, exits 0
-3. `wcc-domain-init` runs once, calls WLST to create the WCC domain on the
-   `wcc-domain` named volume, exits 0
-4. `wcc-admin` starts AdminServer with that domain mounted; healthcheck on
-   `/weblogic/ready`
-5. `wcc-ucm` waits for AdminServer to be healthy, then starts UCM_server1
-   pointing at `t3://wcc-admin:7001`
-
-Re-runs: if the `wcc-domain` volume already has a populated domain,
-`create-domain.sh` short-circuits and skips re-creation. The RCU step is
-destructive — it drops the prior schemas before re-creating — so don't expect
-to preserve content if you tear down and recreate.
+1. `db` starts and runs its healthcheck until the listener and PDB are open.
+2. `wcc-admin` starts. Its default CMD is Oracle's
+   `createDomainandStartAdmin.sh`, which on first start:
+   - runs RCU (`rcu -createRepository`) against the DB to create the
+     WCC schemas (CONTENT, MDS, STB, OPSS, IAU*, WLS)
+   - runs WLST (`createWCContentDomain_PS4.py`) to build the domain at
+     `/u01/oracle/user_projects/domains/${DOMAIN_NAME}`
+   - starts NodeManager + AdminServer in the foreground
+   On subsequent starts, the script detects the `RCU.<prefix>.suc` and
+   `WCContent.Domain.Configure.suc` marker files and skips RCU + domain
+   creation, only restarting servers.
+3. `wcc-content` waits for `wcc-admin` to be healthy, then runs Oracle's
+   `configureOrStartWebCenterContent.sh` which starts UCM_server1 and
+   IBR_server1 against the shared domain volume.
 
 ## Volumes
 
 | Volume | Mount in container | Purpose | Lifetime |
 |---|---|---|---|
-| `oradata` | `/opt/oracle/oradata` (db) | DB datafiles | persistent across `up`/`down`; wiped by `down -v` |
-| `wcc-domain` | `/u01/oracle/user_projects` (wcc-*) | WebLogic domain home | persistent; wiped by `down -v` |
-| `wcc-shared` | `/u01/oracle/shared` (wcc-admin, wcc-ucm) | content vault/web/native files | persistent; wiped by `down -v` |
+| `oradata` | `/opt/oracle/oradata` (db) | DB datafiles | persists across `up`/`down`; wiped by `down -v` |
+| `wcc-userprojects` | `/u01/oracle/user_projects` (wcc-admin + wcc-content) | WebLogic domain + Oracle's `container-data` marker dir | persists; wiped by `down -v` |
+
+The wcc-userprojects volume holds:
+
+- `domains/wcc_domain/` — full WebLogic domain (config.xml, servers, security, etc.)
+- `container-data/` — Oracle's bootstrap state (RCU success markers, env snapshot, logs)
 
 ## Networks
 
 Single bridge network `wccnet`. All inter-container references use service
-names (`db`, `wcc-admin`, etc.) as DNS.
+names as DNS — `wcc-content` reaches the admin server at `t3://wcc-admin:7001`.
 
 ## Ports (host:container)
 
 | Host | Container | Service | Purpose |
 |---|---|---|---|
-| 1521 | 1521 | db | Oracle listener (SQL Developer, sqlcl, app connections) |
+| 1521 | 1521 | db | Oracle listener |
 | 7001 | 7001 | wcc-admin | WebLogic AdminConsole (`/console`) |
-| 16200 | 16200 | wcc-ucm | Content Server UI (`/cs`) |
-| 4444 | 4444 | wcc-ucm | UCM Intradoc (internal protocol) |
+| 16200 | 16200 | wcc-content | UCM Content Server UI (`/cs`) |
+| 16250 | 16250 | wcc-content | IBR (Inbound Refinery) UI |
+| 4444 | 4444 | wcc-content | UCM Intradoc protocol |
+| 5555 | 5555 | wcc-content | IBR Intradoc protocol |
 
-You can change host-side ports in `.env` without touching `docker-compose.yml`.
+You can remap host-side ports in `.env` (`UCM_PORT`, `IBR_PORT`, etc.) without
+editing `docker-compose.yml`.
 
-## What's NOT included (yet)
+## What's NOT included
 
-- IBR (Inbound Refinery) — needs a second managed server + matching JVM args
-- IPM / Capture / WCC ADF UI — additional managed servers
-- TLS for AdminConsole / UCM — runs HTTP on a private bridge network
-- NodeManager — domain runs in foreground mode via `startWebLogic.sh`,
-  fine for dev but you'd want NM for production-like restarts
-- Backup / restore — `oradata` and `wcc-domain` volumes are not snapshotted
+- **IPM / Capture / WCC ADF UI** — Oracle's image supports extending the
+  domain with these by setting the `component` env var on `wcc-admin` to e.g.
+  `"IPM,CAPTURE,ADFUI"`. Each adds its own managed server and needs an
+  additional companion container running the matching
+  `configureOrStartIPM.sh` / `configureOrStartCapture.sh` / `configureOrStartWCCADF.sh`.
+- **TLS** — runs HTTP on a private bridge network. Add a reverse proxy
+  (nginx/traefik) in front for TLS.
+- **Backup / restore** — `oradata` and `wcc-userprojects` are not snapshotted.
 
-These are deliberate scope cuts to keep the playground reproducible. Pull
-requests welcome.
+These are deliberate scope cuts to keep the playground reproducible.

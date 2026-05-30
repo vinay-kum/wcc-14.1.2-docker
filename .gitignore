@@ -10,10 +10,10 @@ binaries/
 *.bin
 *.rsp
 
-# Generated domain state (created at runtime inside volumes — keep out of git)
+# Runtime state if someone bind-mounts a host dir instead of using named volumes
 domain/
-shared/
 oradata/
+user_projects/
 
 # Editor / OS noise
 .DS_Store

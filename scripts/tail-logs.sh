@@ -8,4 +8,4 @@ cd "$(dirname "$0")/.."
 if [[ $# -gt 0 ]]; then
   exec docker compose logs -f "$@"
 fi
-exec docker compose logs -f wcc-admin wcc-ucm
+exec docker compose logs -f wcc-admin wcc-content

@@ -1,35 +1,35 @@
 # Oracle WebCenter Content 14.1.2 + Oracle AI Database 26ai Free
 # Local playground via docker-compose.
 #
+# This compose uses Oracle's BUNDLED bootstrap scripts inside the WCC image
+# (/u01/oracle/container-scripts/*). The image is self-bootstrapping:
+#   - wcc-admin's default CMD runs createDomainandStartAdmin.sh which:
+#       1. runs RCU against the DB to create FMW schemas
+#       2. runs WLST (createWCContentDomain_PS4.py) to build the domain
+#       3. starts NodeManager + AdminServer
+#   - wcc-content runs configureOrStartWebCenterContent.sh which starts
+#       UCM_server1 and IBR_server1 against the shared domain volume.
+#
 # Read docs/03-quickstart.md before running. You must:
-#   1. docker login container-registry.oracle.com (Oracle SSO)
+#   1. docker login container-registry.oracle.com (Auth Token, not SSO password)
 #   2. Accept license at container-registry.oracle.com for `database/free`
-#      AND `middleware/webcenter-content` (one-time, per Oracle SSO account)
-#   3. cp .env.example .env  and edit (especially WCC_IMAGE tag)
+#      AND `middleware/webcenter-content`
+#   3. cp .env.example .env  and review (defaults are fine for a playground)
 #
 # Flow on `docker compose up`:
-#   db (healthy) -> wcc-rcu (run-once) -> wcc-domain-init (run-once) -> wcc-admin -> wcc-ucm
-#
-# Tear down with `./scripts/teardown.sh` (or `docker compose down -v` to wipe volumes).
+#   db (healthy) -> wcc-admin (creates domain + starts AdminServer)
+#                -> wcc-content (starts UCM + IBR managed servers)
 
 name: wcc14
 
 x-wcc-common: &wcc-common
   image: ${WCC_IMAGE}
-  # WCC images are linux/amd64 only. On Apple Silicon this runs under emulation (slow).
+  # WCC images are linux/amd64 only. On Apple Silicon this runs under emulation.
   platform: ${WCC_PLATFORM:-linux/amd64}
-  environment:
-    DOMAIN_NAME: ${DOMAIN_NAME}
-    DOMAIN_HOME: /u01/oracle/user_projects/domains/${DOMAIN_NAME}
-    ADMIN_USERNAME: ${ADMIN_USERNAME}
-    ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-    DB_CONNECTION_STRING: ${DB_CONNECTION_STRING}
-    RCU_PREFIX: ${RCU_PREFIX}
-    RCU_SCHEMA_PASSWORD: ${RCU_SCHEMA_PASSWORD}
-    DB_SYS_PASSWORD: ${DB_SYS_PASSWORD}
-    PRODUCTION_MODE: ${PRODUCTION_MODE}
   networks:
     - wccnet
+  # Oracle's image bakes a HEALTHCHECK that uses a buggy URL template — override
+  # with explicit per-service checks below.
 
 services:
   # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ services:
     container_name: wcc14-db
     restart: unless-stopped
     environment:
-      ORACLE_PWD: ${DB_SYS_PASSWORD}
+      ORACLE_PWD: ${DB_PASSWORD}
       ORACLE_CHARACTERSET: AL32UTF8
     ports:
       - "${DB_PORT}:1521"
@@ -56,100 +56,93 @@ services:
       start_period: 180s
 
   # ---------------------------------------------------------------------------
-  # One-shot: create RCU schemas in the DB (CONTENT, MDS, STB, OPSS, IAU*, WLS).
-  # Exits 0 on success. Re-runs are idempotent only if RCU_DROP_AND_CREATE=true.
-  # ---------------------------------------------------------------------------
-  wcc-rcu:
-    <<: *wcc-common
-    container_name: wcc14-rcu
-    restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./scripts:/opt/wcc/scripts:ro
-    entrypoint: ["/bin/bash", "/opt/wcc/scripts/create-rcu-schemas.sh"]
-
-  # ---------------------------------------------------------------------------
-  # One-shot: create the WCC WebLogic domain on the shared volume.
-  # Runs WLST against templates packaged inside the WCC image.
-  # ---------------------------------------------------------------------------
-  wcc-domain-init:
-    <<: *wcc-common
-    container_name: wcc14-domain-init
-    restart: "no"
-    depends_on:
-      wcc-rcu:
-        condition: service_completed_successfully
-    volumes:
-      - wcc-domain:/u01/oracle/user_projects
-      - ./scripts:/opt/wcc/scripts:ro
-      - ./config/wlst:/opt/wcc/wlst:ro
-    entrypoint: ["/bin/bash", "/opt/wcc/scripts/create-domain.sh"]
-
-  # ---------------------------------------------------------------------------
-  # WebLogic AdminServer (long-running)
+  # WCC AdminServer — creates the domain on first start.
+  # Default CMD = /u01/oracle/container-scripts/createDomainandStartAdmin.sh
   # ---------------------------------------------------------------------------
   wcc-admin:
     <<: *wcc-common
     container_name: wcc14-admin
+    hostname: wcc-admin
     restart: unless-stopped
     depends_on:
-      wcc-domain-init:
-        condition: service_completed_successfully
+      db:
+        condition: service_healthy
     ports:
       - "${ADMIN_PORT}:7001"
     volumes:
-      - wcc-domain:/u01/oracle/user_projects
-      - wcc-shared:/u01/oracle/shared
-    command:
-      - /bin/bash
-      - -c
-      - |
-        DH=/u01/oracle/user_projects/domains/${DOMAIN_NAME}
-        echo "Starting AdminServer from $$DH"
-        exec "$$DH/startWebLogic.sh"
+      # /u01/oracle/user_projects is Oracle's documented VOLUME_DIR — the domain
+      # and container-data both live under it. Shared with wcc-content.
+      - wcc-userprojects:/u01/oracle/user_projects
+    environment:
+      DB_CONNECTION_STRING: ${DB_CONNECTION_STRING}
+      DB_RCUPREFIX: ${DB_RCUPREFIX}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SCHEMA_PASSWORD: ${DB_SCHEMA_PASSWORD}
+      DB_DROP_AND_CREATE: ${DB_DROP_AND_CREATE:-false}
+      ADMIN_SERVER_CONTAINER_NAME: wcc-admin
+      ADMIN_PORT: ${ADMIN_PORT}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      UCM_PORT: ${UCM_PORT}
+      IBR_PORT: ${IBR_PORT}
+      UCM_INTRADOC_PORT: ${UCM_INTRADOC_PORT}
+      IBR_INTRADOC_PORT: ${IBR_INTRADOC_PORT}
+      KEEP_CONTAINER_ALIVE: "true"
+      # `component` selects extension domains. Empty = base WCC (UCM + IBR) only.
+      # Set to e.g. "IPM,CAPTURE,ADFUI" to extend.
+      component: ""
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:7001/weblogic/ready || exit 1"]
       interval: 20s
       timeout: 5s
-      retries: 30
-      start_period: 240s
+      retries: 60
+      start_period: 600s
 
   # ---------------------------------------------------------------------------
-  # UCM ManagedServer (Content Server)
+  # WCC Content — runs UCM_server1 + IBR_server1 in one container.
+  # Uses Oracle's configureOrStartWebCenterContent.sh.
+  # Shares the domain volume created by wcc-admin.
   # ---------------------------------------------------------------------------
-  wcc-ucm:
+  wcc-content:
     <<: *wcc-common
-    container_name: wcc14-ucm
+    container_name: wcc14-content
+    hostname: wcc-content
     restart: unless-stopped
     depends_on:
       wcc-admin:
         condition: service_healthy
     ports:
       - "${UCM_PORT}:16200"
+      - "${IBR_PORT}:16250"
       - "${UCM_INTRADOC_PORT}:4444"
+      - "${IBR_INTRADOC_PORT}:5555"
     volumes:
-      - wcc-domain:/u01/oracle/user_projects
-      - wcc-shared:/u01/oracle/shared
-    command:
-      - /bin/bash
-      - -c
-      - |
-        DH=/u01/oracle/user_projects/domains/${DOMAIN_NAME}
-        echo "Starting UCM_server1 via $$DH/bin/startManagedWebLogic.sh"
-        exec "$$DH/bin/startManagedWebLogic.sh" UCM_server1 "t3://wcc-admin:7001"
+      - wcc-userprojects:/u01/oracle/user_projects
+    environment:
+      ADMIN_SERVER_CONTAINER_NAME: wcc-admin
+      ADMIN_PORT: ${ADMIN_PORT}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      UCM_PORT: ${UCM_PORT}
+      IBR_PORT: ${IBR_PORT}
+      UCM_HOST_PORT: ${UCM_PORT}
+      IBR_HOST_PORT: ${IBR_PORT}
+      UCM_INTRADOC_PORT: ${UCM_INTRADOC_PORT}
+      IBR_INTRADOC_PORT: ${IBR_INTRADOC_PORT}
+      KEEP_CONTAINER_ALIVE: "true"
+    command: ["/bin/bash", "/u01/oracle/container-scripts/configureOrStartWebCenterContent.sh"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:16200/cs/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:16200/weblogic/ready || exit 1"]
       interval: 30s
       timeout: 5s
-      retries: 30
-      start_period: 300s
+      retries: 60
+      start_period: 600s
 
 volumes:
   oradata:
-  wcc-domain:
-  wcc-shared:
+  wcc-userprojects:
 
 networks:
   wccnet:

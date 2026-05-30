@@ -1,78 +1,95 @@
 # 05 — Troubleshooting
 
-## `unauthorized: authentication required` when pulling
+## `unauthorized: Auth failed` on `docker login`
 
-You didn't accept the license for that image repo. Go to
-<https://container-registry.oracle.com>, sign in, browse to the repo
-(`database/free` or `middleware/webcenter-content`), click **Continue**
-to accept terms. Then retry `docker pull`.
+You're using your SSO password instead of an Auth Token. Oracle retired SSO
+password CLI auth on 2025-06-30. Generate an Auth Token from the registry
+UI (your avatar → **Auth Token**) and use that as the docker password.
+Username stays as your Oracle SSO email. Details in
+[01-prerequisites.md](01-prerequisites.md#generate-an-auth-token-required-since-june-2025).
 
-## `manifest unknown` when pulling WCC
+## `unauthorized: authentication required` on `docker pull`
 
-The tag you put in `.env` is stale. Oracle rotates dated CPU tags. Refresh
-from <https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content>
-and update `WCC_IMAGE` in `.env`.
+License not accepted for that specific repo. Even with a working Auth Token,
+each image repo (`database/free`, `middleware/webcenter-content`) requires
+clicking **Continue** on its license page at
+<https://container-registry.oracle.com> separately.
+
+## `manifest unknown` on WCC pull
+
+The tag pinned in `.env` was rotated. Refresh from
+<https://container-registry.oracle.com/ords/ocr/ba/middleware/webcenter-content>
+and update `WCC_IMAGE` in your local `.env`.
 
 ## DB healthcheck never goes healthy
 
-First-run DB initialization takes 5–10 min on x86_64, 15+ min under arm64
-emulation. Compose's `start_period: 180s` gives healthcheck retries a grace
-window, but if it's been 20+ minutes:
+First-run DB init takes 5–10 min on x86_64, 15+ min on arm64 emulation.
+`start_period: 180s` gives the healthcheck grace, but if it's been 20+ min:
 
 ```bash
 docker compose logs db | tail -100
-# look for stack traces or ORA- errors
 ```
 
-Common causes:
-- Not enough RAM (image needs ~2 GB just to start the listener)
-- `oradata` volume on a filesystem that doesn't support fsync properly
-  (some Docker Desktop configs on macOS)
+Look for ORA- errors. Common causes: not enough RAM (DB needs ~2 GB just
+to open the listener), or `oradata` on a filesystem that doesn't support
+proper fsync.
 
-## `wcc-rcu` exits with `ORA-12541: TNS:no listener`
-
-The DB healthcheck went green prematurely — listener up but PDB still mounting.
-Restart the init step:
+## `wcc-admin` exits with RCU error
 
 ```bash
-docker compose up -d wcc-rcu
+docker compose logs wcc-admin | grep -A5 -i "rcu\|ora-"
+docker compose exec wcc-admin cat /u01/oracle/user_projects/container-data/logs/RCU_createRepository.out 2>/dev/null
 ```
 
-## `wcc-domain-init` fails with `Template not found`
+Common cases:
 
-The WLST template paths in [create-wcc-domain.py](../config/wlst/create-wcc-domain.py)
-don't match your image's layout. See
-[04-rcu-and-domain.md § When template paths don't match](04-rcu-and-domain.md#when-template-paths-dont-match).
+- **`ORA-12541: TNS:no listener`** — DB healthcheck went green prematurely.
+  `docker compose restart wcc-admin` after another minute.
+- **`RCU-6107: schemas already exist`** — A previous run left schemas behind.
+  Set `DB_DROP_AND_CREATE=true` in `.env` and restart `wcc-admin`.
+- **`ORA-01017: invalid credentials`** — `DB_PASSWORD` in `.env` doesn't
+  match what the DB was initialized with. If you changed `DB_PASSWORD`
+  after first DB start, the DB still has the old password. Either change
+  it back or `./scripts/teardown.sh` to wipe and start over.
 
-## AdminServer starts but UCM never reaches RUNNING
+## `wcc-admin` healthcheck never green but logs say `Server state changed to RUNNING`
 
-Usually one of:
+The image's bundled healthcheck has a buggy URL template (`http://{$HOST:$PORT}/...`
+with literal braces). Our compose file overrides with
+`curl -sf http://localhost:7001/weblogic/ready`. If you removed that
+override, that's the cause. Re-add it.
 
-1. **Datasource lookup fails.** Check AdminConsole → Services → Data Sources.
-   Test each datasource. If any fail, the schema name in
-   [create-wcc-domain.py](../config/wlst/create-wcc-domain.py)
-   doesn't match what RCU created, OR the password is wrong.
+## `wcc-content` starts UCM but it never reaches RUNNING
 
-2. **UCM post-config wizard is waiting on you.** Hit <http://localhost:16200/cs>
-   and complete the wizard.
+Most common reasons:
 
-3. **JVM heap too small.** UCM managed server defaults are tight for some
-   workloads. Edit `$DOMAIN_HOME/bin/setUCMDomainEnv.sh` (or the equivalent)
-   inside the running container, restart `wcc-ucm`.
+1. **Datasource lookup fails.** Open AdminConsole → Services → Data Sources,
+   click each one → Monitoring tab → Test. Any failing one needs its
+   schema/password fixed.
+2. **UCM autoinstall.cfg substitution went wrong.** Check inside the container:
+
+   ```bash
+   docker compose exec wcc-content cat /u01/oracle/user_projects/domains/${DOMAIN_NAME}/ucm/cs/bin/autoinstall.cfg
+   ```
+
+   Any `@PLACEHOLDER@` strings left un-substituted means
+   `configureOrStartWebCenterContent.sh` couldn't see one of the port env
+   vars. Verify all `UCM_*` / `IBR_*` env vars are set in `wcc-content`'s
+   environment.
+3. **Memory pressure.** UCM + IBR + AdminServer in two containers is
+   ~6–8 GB. Bump Docker Desktop's resources.
 
 ## Slow bootstrap on Apple Silicon
 
-Expected. WCC is linux/amd64-only and runs through Rosetta/qemu. To verify
-emulation is happening:
+Expected. WCC is linux/amd64-only and runs under Rosetta/qemu.
 
 ```bash
 docker compose exec wcc-admin uname -m
-# x86_64    ← yes, that's emulated on arm64 host
+# x86_64    ← emulated; native arm64 would say aarch64
 ```
 
-Options:
-- Accept it (one-time cost during bootstrap; runtime is OK after)
-- Run on a Linux x86_64 VM (UTM with a UTM-supported x86 distro, or a cloud VM)
+Options: accept it (one-time cost; runtime is OK once servers are up), or
+run on a Linux x86_64 VM (cloud instance, UTM, Multipass).
 
 ## Wipe and start over
 
@@ -86,19 +103,19 @@ docker compose up -d
 ```bash
 docker compose exec wcc-admin bash
 # inside:
-#   $DOMAIN_HOME       — domain root
-#   $ORACLE_HOME       — middleware install
-#   /u01/oracle/shared — content vault (if you mounted it)
-#   tail -f $DOMAIN_HOME/servers/AdminServer/logs/AdminServer.log
+#   /u01/oracle                          — ORACLE_HOME
+#   /u01/oracle/user_projects/domains/$DOMAIN_NAME  — domain root
+#   /u01/oracle/user_projects/container-data/       — bootstrap state + logs
+#   /u01/oracle/container-scripts/       — Oracle's bundled scripts
 ```
 
 ## Asking for help
 
-If something fails in a way these docs don't cover, the most useful artifacts
-to share:
+Useful artifacts to share:
 
 ```bash
 docker compose ps -a > diag.txt
-docker compose logs --tail=200 db wcc-rcu wcc-domain-init wcc-admin wcc-ucm >> diag.txt
-docker compose exec wcc-admin ls /u01/oracle/user_projects/domains/${DOMAIN_NAME}/config/jdbc/ >> diag.txt 2>&1
+docker compose logs --tail=200 db wcc-admin wcc-content >> diag.txt
+docker compose exec wcc-admin ls -la /u01/oracle/user_projects/container-data/ >> diag.txt 2>&1
+docker compose exec wcc-admin cat /u01/oracle/user_projects/container-data/logs/RCU_createRepository.out >> diag.txt 2>&1
 ```

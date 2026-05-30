@@ -1,128 +1,91 @@
-# 04 — RCU & domain creation
+# 04 — Bootstrap internals
 
-This page explains the two one-shot init containers: why they exist, what they
-do, and how to debug them.
+This page documents what Oracle's bundled scripts do inside the WCC image.
+You don't need to read this to use the stack — it's here for when something
+goes wrong and you need to know what to inspect.
 
-## Why two init containers?
+## The scripts live in the image
 
-WCC 14.1.2's image was designed to be operated by the WebLogic Kubernetes
-Operator (WKO). WKO uses Kubernetes Jobs to do exactly two things before any
-server starts:
+All bootstrap logic ships inside the WCC image at
+`/u01/oracle/container-scripts/`. The most relevant entries:
 
-1. **Seed the database** with Fusion Middleware schemas (RCU)
-2. **Materialize a WebLogic domain** on a persistent volume
+| Script | Role |
+|---|---|
+| `createDomainandStartAdmin.sh` | Default CMD for `wcc-admin`. Orchestrates RCU + domain + AdminServer start. |
+| `createWCCDomain.sh` | Called by the above. Runs RCU then invokes WLST. |
+| `createWCContentDomain_PS4.py` | WLST script that builds the domain. |
+| `startAdminContainer.sh` | Starts NodeManager + AdminServer and runs `setTopology.py`. |
+| `setTopology.py` | Assigns machines/clusters to managed servers. |
+| `configureOrStartWebCenterContent.sh` | CMD for `wcc-content`. Starts UCM_server1 + IBR_server1, runs first-time UCM/IBR autoconfig. |
+| `startManagedServer.sh` / `stopManagedServer.sh` | Generic managed-server lifecycle helpers. |
+| `keepContainerAlive.sh` | Tail-on-dummy-log used to keep the content container PID 1 alive. |
+| `get_healthcheck_url.sh` | Generates the URL used by the image's default HEALTHCHECK (note: has a bug — we override the healthcheck in compose). |
 
-We replicate this with `wcc-rcu` and `wcc-domain-init`. Both use the WCC image
-(which bundles RCU and WLST), run to completion, and exit. Compose's
-`depends_on.condition: service_completed_successfully` enforces ordering.
+## What `wcc-admin` does on first start
 
-## What `wcc-rcu` does
+1. **Creates persistent dirs** under `/u01/oracle/user_projects/container-data/`
+   (logs, RCU markers, env snapshot).
+2. **Runs RCU** via `/u01/oracle/oracle_common/bin/rcu -silent -createRepository`
+   against `${DB_CONNECTION_STRING}` with `-schemaPrefix ${DB_RCUPREFIX}` and
+   components: `CONTENT MDS STB OPSS IAU IAU_APPEND IAU_VIEWER WLS`.
+   - On success writes `container-data/RCU.${DB_RCUPREFIX}.suc`.
+   - If `DB_DROP_AND_CREATE=true`, drops the prefix first.
+3. **Runs WLST** with `createWCContentDomain_PS4.py` to build the domain
+   at `/u01/oracle/user_projects/domains/${DOMAIN_NAME}`. The WLST extends
+   the base WLS template with JRF + WCC templates and creates `AdminServer`,
+   `UCM_server1`, and `IBR_server1` as managed servers.
+   - On success writes `container-data/WCContent.Domain.Configure.suc`.
+4. **Writes boot.properties** for AdminServer, UCM, IBR so they can start
+   without prompting for credentials.
+5. **Starts NodeManager** in the background, then AdminServer in the
+   foreground via `startAdmin.sh`.
+6. **Calls `setTopology.py`** to assign machines/clusters to the managed
+   servers (this is what lets `wcc-content` start them remotely).
 
-Source: [scripts/create-rcu-schemas.sh](../scripts/create-rcu-schemas.sh)
+## What `wcc-content` does on first start
 
-Runs `$ORACLE_HOME/oracle_common/bin/rcu -silent -createRepository` against
-the DB. The `-component` flags select which schemas to create:
+1. Validates the port env vars.
+2. **First boot of UCM_server1** via `startManagedServer.sh UCM_server1`.
+3. **Stops UCM_server1**, then templates `autoinstall.cfg.cs` and
+   `ucm.properties` with the right host/port values, copies them into
+   `${DOMAIN_HOME}/ucm/cs/bin/autoinstall.cfg`. This is the post-install
+   auto-configuration Content Server expects on first boot.
+4. **Restarts UCM_server1** with the autoinstall.cfg in place.
+5. Repeats steps 2–4 for IBR_server1.
+6. Calls `keepContainerAlive.sh` to keep PID 1 alive (tails a dummy log).
 
-| Component | Schema created | Purpose |
-|---|---|---|
-| `CONTENT` | `<PREFIX>_OCS` | WCC core (Content Server) |
-| `MDS` | `<PREFIX>_MDS` | Fusion Middleware metadata |
-| `STB` | `<PREFIX>_STB` | Service Table (FMW discovery) |
-| `OPSS` | `<PREFIX>_OPSS` | Platform security services |
-| `IAU` / `IAU_APPEND` / `IAU_VIEWER` | `<PREFIX>_IAU*` | Audit services |
-| `WLS` | `<PREFIX>_WLS*` | WebLogic-internal (`WLSRUNTIME`, `WLS`) |
+## Re-runs are idempotent
 
-The script `-dropRepository` first (best-effort) to make re-runs safe, then
-`-createRepository`.
+The `.suc` marker files in `container-data/` make re-runs cheap:
 
-### Verifying RCU success
+- If `RCU.${DB_RCUPREFIX}.suc` exists, RCU is skipped.
+- If `WCContent.Domain.Configure.suc` exists, domain creation is skipped.
 
-```bash
-docker compose exec db sqlplus -L sys/${DB_SYS_PASSWORD}@FREEPDB1 as sysdba <<SQL
-  SELECT username, account_status FROM dba_users WHERE username LIKE 'WCC1%';
-SQL
-```
+So `docker compose down && docker compose up -d` restarts servers without
+re-bootstrapping — provided the `wcc-userprojects` volume still exists.
 
-You should see ~10 schemas, all `OPEN`. If they're `LOCKED`, that's normal —
-RCU locks schemas and the domain creation step unlocks the ones it uses.
+`docker compose down -v` (or `./scripts/teardown.sh`) wipes the volume,
+which forces full re-bootstrap on next `up`. Set `DB_DROP_AND_CREATE=true`
+in `.env` if you also need to drop+recreate schemas in a DB that survived.
 
-### Debugging `wcc-rcu`
+## When something goes wrong
 
-```bash
-docker compose logs wcc-rcu
-# common failures:
-#   ORA-12541: TNS:no listener      → DB not actually ready; retry after a minute
-#   ORA-01017: invalid credentials  → DB_SYS_PASSWORD wrong in .env
-#   RCU-6107: schemas already exist → dropRepository failed; manually drop or wipe oradata
-```
-
-## What `wcc-domain-init` does
-
-Source: [scripts/create-domain.sh](../scripts/create-domain.sh) →
-[config/wlst/create-wcc-domain.py](../config/wlst/create-wcc-domain.py)
-
-Runs WLST in offline mode:
-1. Reads the base WebLogic template (`wls.jar`)
-2. Sets AdminServer port (7001) and admin user/password from env
-3. Writes the base domain to `/u01/oracle/user_projects/domains/<DOMAIN_NAME>`
-4. Re-opens the domain and adds two extension templates:
-   - **JRF** (`oracle.jrf_template.jar`) — Fusion Middleware glue
-   - **WCC** (`oracle.ucm.cs_template.jar`) — Content Server config
-5. Creates the `UCM_server1` managed server on port 16200
-6. Points each JDBC datasource at the matching RCU schema
-
-The domain ends up on the `wcc-domain` named volume — shared with `wcc-admin`
-and `wcc-ucm` at runtime.
-
-### When template paths don't match
-
-The WLST script encodes template paths based on Oracle's published 14.1.2
-layout. If your image is structured differently, the WLST run fails with
-`Template not found` or similar.
-
-Find the actual templates inside the image:
+The marker files and logs in `container-data/` are your friends:
 
 ```bash
-# spin up a one-off shell in the WCC image
-docker run --rm -it --platform linux/amd64 ${WCC_IMAGE} bash
-
-# inside the container:
-find /u01/oracle -name '*.jar' -path '*/templates/*' | head -40
-find /u01/oracle -name 'wcc*' -o -name 'ucm*' 2>/dev/null
-ls /u01/oracle/wccontent/common/templates/wls/ 2>/dev/null
+docker compose exec wcc-admin bash -lc '
+  ls -la /u01/oracle/user_projects/container-data/
+  ls -la /u01/oracle/user_projects/container-data/logs/
+'
 ```
 
-Patch `BASE_TEMPLATE`, `JRF_TEMPLATE`, `WCC_TEMPLATE` in
-[create-wcc-domain.py](../config/wlst/create-wcc-domain.py) with the real
-paths, then `docker compose down -v && docker compose up -d` to re-bootstrap.
+Typical files there:
 
-### When JDBC datasource names don't match
+- `RCU.WCC1.suc` (if RCU succeeded)
+- `WCContent.Domain.Configure.suc` (if domain creation succeeded)
+- `logs/RCU_createRepository.out` — RCU log
+- `logs/UCM_server1_start-*.log` — UCM startup log
+- `contenv.sh` — env snapshot from the first successful bootstrap
 
-The `point_ds()` calls assume standard FMW + WCC datasource names. If the WCC
-extension template names a datasource differently, those updates silently skip
-(the script catches and logs). After first domain creation, list actual names:
-
-```bash
-docker compose exec wcc-admin ls /u01/oracle/user_projects/domains/${DOMAIN_NAME}/config/jdbc/
-```
-
-Then update the `(name, schema)` tuples in
-[create-wcc-domain.py](../config/wlst/create-wcc-domain.py) accordingly.
-
-## When to re-run init
-
-If you change `RCU_PREFIX`, `DOMAIN_NAME`, or the WLST script:
-
-```bash
-./scripts/teardown.sh   # wipes oradata + wcc-domain volumes
-docker compose up -d    # full re-bootstrap
-```
-
-If you only edit `create-wcc-domain.py` and want to keep the DB:
-
-```bash
-docker compose down
-docker volume rm wcc14_wcc-domain
-docker compose up -d
-# the wcc-rcu init will re-run (and re-drop+create schemas), then domain-init
-```
+If domain creation failed mid-way, deleting these marker files and
+restarting `wcc-admin` retries the step that failed.
