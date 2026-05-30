@@ -34,6 +34,47 @@ Look for ORA- errors. Common causes: not enough RAM (DB needs ~2 GB just
 to open the listener), or `oradata` on a filesystem that doesn't support
 proper fsync.
 
+## RCU fails with "not certified" against DB 23.10+ / 26ai
+
+Symptom in `wcc-admin` logs:
+
+```text
+ERROR - RCU-6080 Global prerequisite check failed for the specified database.
+The selected Oracle Database instance is not certified with this version of
+Oracle Fusion Middleware. Oracle Fusion Middleware 14c requires Oracle Database
+23ai (23.4) or higher.
+```
+
+This is a **string-comparison bug in Oracle's RCU**, not a real cert issue.
+The prereq query in `/u01/oracle/oracle_common/rcu/config/ComponentInfo.xml` does:
+
+```sql
+... AND version_full >= '23.0.0.0.0' AND version_full < '23.4.0.0.0'
+```
+
+In SQL string ordering, `'23.26.1.0.0' < '23.4.0.0.0'` is TRUE (because
+`'2' < '4'` at character 3), so the check fires for every 23.10+ release
+including 26ai. The check's INTENT is to block 23.0–23.3 only.
+
+**This repo already includes a fix** — `image/Dockerfile.wcc` applies a
+one-line sed to replace the buggy string comparison with a numeric one
+using `TO_NUMBER(REGEXP_SUBSTR(...))`. `docker compose build` (run
+automatically by `up`) produces a locally-tagged patched image.
+
+If you're seeing this error, you likely either:
+
+- pulled the base WCC image directly without going through compose-build, or
+- removed/edited the `build:` block in `docker-compose.yml`
+
+Run `docker compose build wcc-admin` then `docker compose up -d --force-recreate`
+and check the image used:
+
+```bash
+docker compose ps --format "table {{.Service}}\t{{.Image}}"
+# wcc-admin and wcc-content should both show the "...-patched" tag,
+# NOT the raw container-registry.oracle.com path.
+```
+
 ## `wcc-admin` exits with RCU error
 
 ```bash

@@ -9,6 +9,12 @@ inside the image (`/u01/oracle/container-scripts/`) that handle RCU schema
 creation, WLST domain creation, and server startup. This compose just wires
 up two containers using those scripts and connects them to the database.
 
+> **One patch is applied:** Oracle's RCU has a string-comparison bug that
+> mis-rejects DB 23.10+ (including 26ai = 23.26) as "uncertified". This repo
+> includes [`image/Dockerfile.wcc`](image/Dockerfile.wcc) — a thin layered
+> image that fixes the one buggy SQL query. `docker compose up` builds it
+> automatically. Details in [docs/05-troubleshooting.md](docs/05-troubleshooting.md#rcu-fails-with-not-certified-against-db-2310--26ai).
+
 ## What you get
 
 ```text

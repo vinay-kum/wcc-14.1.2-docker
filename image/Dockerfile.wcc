@@ -1,0 +1,37 @@
+# Layered WCC 14.1.2 image: applies a one-line patch to Oracle's RCU prereq
+# check so it correctly validates Oracle DB 23.10+ (including 26ai = 23.26).
+#
+# Background:
+#   Oracle's RCU ships with a prereq query in
+#   /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml that uses naked
+#   STRING comparison on the DB version_full column:
+#
+#     version_full >= '23.0.0.0.0' AND version_full < '23.4.0.0.0'
+#
+#   In SQL string comparison, '23.26.1.0.0' is LESS than '23.4.0.0.0' (because
+#   '2' < '4' at character position 3), so this misfires on every 23.10+
+#   release including 26ai. The check's INTENT is "block 23.0–23.3 only";
+#   the bug is using string ops instead of numeric ops.
+#
+# The patch:
+#   Replace the SQL with a numeric-aware version using REGEXP_SUBSTR +
+#   TO_NUMBER on the major/minor segments. Same intent (block 23.0–23.3),
+#   fixed implementation. The PrereqValue=0 contract is unchanged.
+#
+# Scope:
+#   ONE SQL string in ONE XML file. No other Oracle code touched. The actual
+#   schema-creation SQL is unmodified — we only fix the gate's bug.
+
+ARG WCC_BASE_IMAGE
+FROM ${WCC_BASE_IMAGE}
+
+USER root
+
+RUN sed -i \
+  "s|version_full >= '23.0.0.0.0' AND  version_full \&lt;  '23.4.0.0.0'|TO_NUMBER(REGEXP_SUBSTR(version_full, '[0-9]+', 1, 1)) = 23 AND TO_NUMBER(REGEXP_SUBSTR(version_full, '[0-9]+', 1, 2)) \&lt; 4|g" \
+  /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml \
+  && hits=$(grep -c "TO_NUMBER(REGEXP_SUBSTR" /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml) \
+  && echo "patched lines: ${hits}" \
+  && [ "${hits}" = "2" ] || (echo "patch verification failed — expected 2 hits, got ${hits}" && exit 1)
+
+USER oracle

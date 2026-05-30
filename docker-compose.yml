@@ -24,6 +24,11 @@ name: wcc14
 
 x-wcc-common: &wcc-common
   image: ${WCC_IMAGE}
+  build:
+    context: ./image
+    dockerfile: Dockerfile.wcc
+    args:
+      WCC_BASE_IMAGE: ${WCC_BASE_IMAGE}
   # WCC images are linux/amd64 only. On Apple Silicon this runs under emulation.
   platform: ${WCC_PLATFORM:-linux/amd64}
   networks:

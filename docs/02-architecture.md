@@ -18,6 +18,16 @@
                             └─────────────────┘
 ```
 
+## Image build
+
+On `docker compose up`, compose first builds a thin layered image from
+[`image/Dockerfile.wcc`](../../image/Dockerfile.wcc). The layer applies a
+single sed patch to fix Oracle's RCU string-comparison bug against DB 23.10+
+(including 26ai). The resulting locally-tagged image is what `wcc-admin`
+and `wcc-content` actually run. See
+[05-troubleshooting.md](05-troubleshooting.md#rcu-fails-with-not-certified-against-db-2310--26ai)
+for the bug background.
+
 ## Bootstrap order
 
 Compose enforces ordering via `depends_on.condition`:
