@@ -2,7 +2,7 @@
 
 ## Container topology
 
-```
+```text
                           ┌──────────────────────────┐
                           │  Docker network: wccnet  │
                           └──────────────────────────┘

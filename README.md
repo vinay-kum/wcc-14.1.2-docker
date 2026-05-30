@@ -11,7 +11,7 @@ learning the WCC + WebLogic stack without standing up Kubernetes.
 
 ## What you get
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │ docker-compose                                                    │
 │                                                                   │
