@@ -34,10 +34,38 @@ repositories. This is **free** but **manual** (one-time, per SSO account):
 2. Sign in with Oracle SSO
 3. Browse to **Database** → **free** → click **Continue** to accept terms
 4. Browse to **Middleware** → **webcenter-content_cpu** → click **Continue**
-5. From your terminal: `docker login container-registry.oracle.com`
 
-Until you accept terms for a given repo, `docker pull` returns
-`unauthorized: authentication required` even after `docker login`.
+### Generate an Auth Token (required since June 2025)
+
+Oracle retired SSO password support for `docker login` on June 30, 2025.
+You now need an Auth Token generated from inside the registry UI. You do
+**not** need an OCI tenancy for this — the token lives on
+`container-registry.oracle.com` itself.
+
+1. While signed in at <https://container-registry.oracle.com>, click your
+   user name/avatar in the top right
+2. Select **Auth Token** from the dropdown
+3. Generate a token and copy it (long opaque string — store it in your
+   password manager; you can't view it again later)
+4. Now log in from the CLI:
+
+   ```bash
+   docker login container-registry.oracle.com
+   # Username: <your Oracle SSO email, e.g. you@example.com>
+   # Password: <paste the Auth Token, NOT your SSO password>
+   ```
+
+If you paste your SSO password you'll get `unauthorized: Auth failed`,
+even though the same credentials work in the browser. The browser uses
+SAML/federated SSO; the CLI endpoint only accepts basic auth with the
+token.
+
+### Per-repo license acceptance
+
+Even with a valid Auth Token, `docker pull` returns
+`unauthorized: authentication required` until you've clicked **Continue**
+on the license page for *each* image repo (Database/free AND
+Middleware/webcenter-content_cpu — two separate clicks).
 
 ## Find the current image tags
 
