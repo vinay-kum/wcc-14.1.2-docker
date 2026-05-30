@@ -137,13 +137,37 @@ services:
       UCM_INTRADOC_PORT: ${UCM_INTRADOC_PORT}
       IBR_INTRADOC_PORT: ${IBR_INTRADOC_PORT}
       KEEP_CONTAINER_ALIVE: "true"
-    command: ["/bin/bash", "/u01/oracle/container-scripts/configureOrStartWebCenterContent.sh"]
+    # Wait for AdminServer to be stable for ~60s before kicking off content bootstrap.
+    # Oracle's createDomainandStartAdmin.sh restarts AdminServer after setTopology.py,
+    # which races with our stop/start cycle in configureOrStartWebCenterContent.sh
+    # (Oracle's stopManagedServer.sh prints "stopped successfully" even when the
+    # WLST connect to admin fails — leaving UCM running but the script thinking it's
+    # stopped, then the next "start" hits an fcntl lock conflict on the persistent
+    # store). 60 consecutive readiness checks 1s apart confirm admin is past its
+    # post-setTopology restart window.
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo "Waiting for wcc-admin to be stable (60 consecutive readiness checks)..."
+        ok=0
+        while [ $$ok -lt 60 ]; do
+          if curl -sf -m 2 http://wcc-admin:7001/weblogic/ready >/dev/null 2>&1; then
+            ok=$$((ok+1))
+          else
+            [ $$ok -gt 0 ] && echo "  (admin blip detected, restarting stability counter)"
+            ok=0
+          fi
+          sleep 1
+        done
+        echo "AdminServer stable. Starting WCC content bootstrap..."
+        exec /u01/oracle/container-scripts/configureOrStartWebCenterContent.sh
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:16200/weblogic/ready || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 60
-      start_period: 600s
+      start_period: 900s
 
 volumes:
   oradata:

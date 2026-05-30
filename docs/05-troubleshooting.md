@@ -100,6 +100,57 @@ with literal braces). Our compose file overrides with
 `curl -sf http://localhost:7001/weblogic/ready`. If you removed that
 override, that's the cause. Re-add it.
 
+## UCM_server1 fails with `fcntl()` lock error on first bootstrap
+
+Symptom in wcc-content logs:
+
+```text
+weblogic.management.DeploymentException: java.io.IOException: Error from
+fcntl() for file locking, Resource temporarily unavailable, errno=11
+...
+Server state changed to FAILED.
+A critical service failed. The server will shut itself down.
+```
+
+**Root cause** — a race in Oracle's bundled scripts on first bootstrap:
+
+1. After domain creation, `startAdminContainer.sh` runs `setTopology.py`,
+   which causes AdminServer to restart briefly.
+2. In parallel, `configureOrStartWebCenterContent.sh` in `wcc-content` is
+   running its first-boot sequence: start UCM, stop UCM via WLST (against
+   AdminServer), copy `autoinstall.cfg`, restart UCM.
+3. The stop-via-WLST hits AdminServer during its restart window →
+   `Connection refused`.
+4. Oracle's `stopManagedServer.sh` doesn't check exit code — it always
+   prints "UCM_server1 stopped successfully" regardless. So the script
+   proceeds.
+5. UCM is still running, still holding its persistent-store file lock.
+6. The next `startManagedServer.sh UCM_server1` tries to open the same
+   lock file → `fcntl() errno=11` (EWOULDBLOCK) → critical service failure.
+
+**Fix** — this repo's `docker-compose.yml` includes a `wait-for-admin-stable`
+wrapper before `wcc-content` invokes Oracle's script. It requires 60
+consecutive successful `/weblogic/ready` checks against `wcc-admin`
+before kicking off the bootstrap, which gives the post-`setTopology`
+restart enough time to finish.
+
+If you removed the wrapper or hit this anyway:
+
+```bash
+# Confirm AdminServer is stable
+curl -sf http://localhost:7001/weblogic/ready
+
+# Force-recreate wcc-content (preserves all volumes; just restarts the script)
+docker compose up -d --force-recreate wcc-content
+
+# Watch for IBR_server1 to reach RUNNING — that's the actual end of bootstrap
+docker compose logs -f wcc-content | grep --line-buffered "Server state changed to"
+```
+
+You may need to recreate 1–2 times on Apple Silicon because the emulated
+fcntl semantics can leave a stale lock that needs a full container recycle
+to clear.
+
 ## `wcc-content` starts UCM but it never reaches RUNNING
 
 Most common reasons:
