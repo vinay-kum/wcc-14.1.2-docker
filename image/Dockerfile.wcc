@@ -1,37 +1,84 @@
-# Layered WCC 14.1.2 image: applies a one-line patch to Oracle's RCU prereq
-# check so it correctly validates Oracle DB 23.10+ (including 26ai = 23.26).
+# Layered WCC 14.1.2 image. Two changes vs Oracle's base:
 #
-# Background:
-#   Oracle's RCU ships with a prereq query in
-#   /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml that uses naked
-#   STRING comparison on the DB version_full column:
+#   1. Patch Oracle's RCU prereq SQL (string-vs-numeric comparison bug that
+#      mis-rejects DB 23.10+ / 26ai as uncertified). One sed against
+#      /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml.
 #
-#     version_full >= '23.0.0.0.0' AND version_full < '23.4.0.0.0'
+#   2. Apply any WCC OPatch bundle zips placed under image/patches/.
+#      The Dec 2024 base image is too old for RedwoodUI (introduced in the
+#      April 2025 bundle and extended through January 2026). Dropping a
+#      recent bundle zip like p39129716_141200_Generic.zip into
+#      image/patches/ adds RedwoodUI plus all subsequent fixes.
 #
-#   In SQL string comparison, '23.26.1.0.0' is LESS than '23.4.0.0.0' (because
-#   '2' < '4' at character position 3), so this misfires on every 23.10+
-#   release including 26ai. The check's INTENT is "block 23.0–23.3 only";
-#   the bug is using string ops instead of numeric ops.
-#
-# The patch:
-#   Replace the SQL with a numeric-aware version using REGEXP_SUBSTR +
-#   TO_NUMBER on the major/minor segments. Same intent (block 23.0–23.3),
-#   fixed implementation. The PrereqValue=0 contract is unchanged.
-#
-# Scope:
-#   ONE SQL string in ONE XML file. No other Oracle code touched. The actual
-#   schema-creation SQL is unmodified — we only fix the gate's bug.
+# Both changes are confined to in-image binaries / config — the WCC license
+# permits running the modified image locally / on a private registry, but
+# you may NOT redistribute the layered image publicly.
 
 ARG WCC_BASE_IMAGE
 FROM ${WCC_BASE_IMAGE}
 
+# ----------------------------------------------------------------------------
+# 1) RCU prereq SQL patch (DB 23.10+ certification fix)
+# ----------------------------------------------------------------------------
 USER root
-
 RUN sed -i \
   "s|version_full >= '23.0.0.0.0' AND  version_full \&lt;  '23.4.0.0.0'|TO_NUMBER(REGEXP_SUBSTR(version_full, '[0-9]+', 1, 1)) = 23 AND TO_NUMBER(REGEXP_SUBSTR(version_full, '[0-9]+', 1, 2)) \&lt; 4|g" \
   /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml \
   && hits=$(grep -c "TO_NUMBER(REGEXP_SUBSTR" /u01/oracle/oracle_common/rcu/config/ComponentInfo.xml) \
-  && echo "patched lines: ${hits}" \
-  && [ "${hits}" = "2" ] || (echo "patch verification failed — expected 2 hits, got ${hits}" && exit 1)
+  && echo "RCU prereq patch — patched lines: ${hits}" \
+  && [ "${hits}" = "2" ] || (echo "RCU patch verification failed — expected 2 hits, got ${hits}" && exit 1)
+
+# ----------------------------------------------------------------------------
+# 2) Apply WCC OPatch bundles from image/patches/
+# ----------------------------------------------------------------------------
+# Each zip is expected to extract to a single numeric directory (e.g. 39129716/)
+# that contains the patch content. OPatch is invoked once per patch directory.
+# We run as `oracle` user since $ORACLE_HOME is owned by oracle:root.
+#
+# OPatch's CheckActiveFilesAndExecutables prereq uses fuser (from psmisc).
+# The minimal Oracle Linux base doesn't include it — install before patching.
+USER root
+RUN command -v fuser >/dev/null 2>&1 || ( \
+      ( command -v microdnf >/dev/null && microdnf install -y psmisc ) \
+      || ( command -v dnf >/dev/null && dnf install -y psmisc ) \
+      || ( command -v yum >/dev/null && yum install -y psmisc ) \
+    ) \
+    && command -v fuser
 
 USER oracle
+ENV ORACLE_HOME=/u01/oracle
+ENV PATH=$ORACLE_HOME/OPatch:$PATH
+
+# COPY runs as root by default; --chown ensures the oracle user can manage them.
+COPY --chown=oracle:root patches/ /tmp/wcc-patches/
+
+RUN set -eu; \
+    cd /tmp/wcc-patches; \
+    shopt -s nullglob 2>/dev/null || true; \
+    found_any=0; \
+    for zip in p*.zip; do \
+      [ -f "$zip" ] || continue; \
+      found_any=1; \
+      echo "=== Applying $zip ==="; \
+      unzip -qo "$zip"; \
+      patch_dir=$(unzip -Z1 "$zip" 2>/dev/null | head -1 | cut -d/ -f1); \
+      if [ -z "$patch_dir" ] || [ ! -d "$patch_dir" ]; then \
+        echo "ERROR: could not determine patch dir for $zip"; exit 1; \
+      fi; \
+      cd "$patch_dir"; \
+      echo "  patch dir: $(pwd)"; \
+      $ORACLE_HOME/OPatch/opatch version; \
+      $ORACLE_HOME/OPatch/opatch apply -silent -invPtrLoc $ORACLE_HOME/oraInst.loc; \
+      cd /tmp/wcc-patches; \
+      rm -rf "$patch_dir" "$zip"; \
+    done; \
+    rmdir /tmp/wcc-patches 2>/dev/null || true; \
+    if [ "$found_any" = "1" ]; then \
+      echo "=== Final patch inventory ==="; \
+      $ORACLE_HOME/OPatch/opatch lspatches; \
+    else \
+      echo "(no patches to apply — image/patches/ contained no p*.zip)"; \
+    fi
+
+# Default CMD / USER / WORKDIR are inherited from the base image
+# (createDomainandStartAdmin.sh / oracle / /u01/oracle).
