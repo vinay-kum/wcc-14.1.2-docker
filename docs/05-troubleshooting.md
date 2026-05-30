@@ -171,6 +171,47 @@ Most common reasons:
 3. **Memory pressure.** UCM + IBR + AdminServer in two containers is
    ~6–8 GB. Bump Docker Desktop's resources.
 
+## UCM_server1 mysteriously dies after IBR starts (OOM kill)
+
+Symptom — `wcc-content` reports both servers started, but then UCM goes
+unresponsive while IBR works fine. Inspecting UCM's start log shows:
+
+```text
+/.../startWebLogic.sh: line 226:  1425 Killed   ${JAVA_HOME}/bin/java ...
+shutDownStatus=137
+```
+
+Exit 137 = SIGKILL from the Linux kernel's OOM killer. Total memory
+across `db` + `wcc-admin` (AdminServer JVM) + `wcc-content` (UCM JVM +
+IBR JVM) exceeds Docker Desktop's allocation and the kernel reclaims
+whichever process the OOM scorer picks — usually UCM since it loads
+last during the bootstrap chain.
+
+**Fix** — increase Docker Desktop memory:
+
+- macOS: whale icon → **Settings** → **Resources** → **Memory** slider →
+  **at least 12 GB** → **Apply & Restart**
+- Linux: edit `/etc/docker/daemon.json` and restart dockerd, OR don't worry
+  about it (Linux Docker uses host RAM directly without a fixed cap)
+
+After increasing memory, recreate the stack:
+
+```bash
+docker compose down            # keeps volumes — domain state preserved
+docker compose up -d
+```
+
+Per-container RAM expectations (steady state, x86_64 emulated on arm64):
+
+| Container | Expected RSS |
+|---|---|
+| `db` (Oracle 26ai Free) | 1.5–2.5 GB |
+| `wcc-admin` (AdminServer JVM) | 2.0–2.5 GB |
+| `wcc-content` (UCM + IBR JVMs) | 3.0–4.5 GB |
+| **Total** | **6.5–9.5 GB** |
+
+So 8 GB to Docker is borderline; 12 GB gives comfortable headroom.
+
 ## Slow bootstrap on Apple Silicon
 
 Expected. WCC is linux/amd64-only and runs under Rosetta/qemu.
