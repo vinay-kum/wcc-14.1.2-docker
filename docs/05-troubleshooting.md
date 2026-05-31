@@ -1,5 +1,42 @@
 # 05 — Troubleshooting
 
+## MS Office preview doesn't work (pptx/docx/xlsx show no rendition)
+
+PDFs preview fine, but Office documents don't. This is **known-incomplete in
+this playground** — the infrastructure is in place but the runtime config
+isn't fully wired up.
+
+**What's working** (post-bootstrap):
+
+- UCM↔IBR outgoing provider `wcc_ibr` registered in
+  `data/providers/providers.hda`
+- `MSOfficeHtmlConverterSupport`, `DynamicConverter`, `TiffConverterSupport`,
+  `XMLConverterSupport`, `InboundRefinerySupport` all Enabled
+- IBR listening on intradoc port 5555 internally
+
+**What's missing** (requires UI-driven admin work):
+
+1. **File-format routing**. UCM currently sends Office files to the *local*
+   `DynamicConverter` (which only knows HTML conversion, not PDF). You can
+   verify this by querying `WCC1_OCS.HTMLCONVERSIONS` — Office uploads show
+   `DOUTPUTFILESIZE=0`. UCM needs explicit rules saying "pptx/docx/xlsx →
+   send to refinery `wcc_ibr`".
+2. **IBR conversion settings**. IBR's accepted-file-format list needs Office
+   types added via its admin UI (<http://localhost:16250/ibr> → Inbound
+   Refinery → Conversion Settings).
+3. **Configuration Manager**. The classic config tool is a Java desktop
+   applet at `$DOMAIN_HOME/ucm/cs/bin/cm.sh`, requires X11 forwarding to use
+   from a container.
+
+**Why we stopped here**: end-to-end Office conversion configuration is
+~4-6 hours of careful UI work that doesn't easily script. The playground
+prioritizes a working stack + RedwoodUI + folder navigation + PDF
+workflows over a fully-tuned conversion pipeline.
+
+**If you want to finish it**: Oracle's official guide is *Managing Oracle
+WebCenter Content* → chapter "Configuring Inbound Refinery". Plan for half
+a day with the Configuration Manager and IBR admin UI open in parallel.
+
 ## `unauthorized: Auth failed` on `docker login`
 
 You're using your SSO password instead of an Auth Token. Oracle retired SSO
