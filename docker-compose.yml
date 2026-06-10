@@ -137,6 +137,11 @@ services:
       UCM_INTRADOC_PORT: ${UCM_INTRADOC_PORT}
       IBR_INTRADOC_PORT: ${IBR_INTRADOC_PORT}
       KEEP_CONTAINER_ALIVE: "true"
+      # The domain's setStartupEnv.sh caps managed servers at -Xmx1024m, which is
+      # too small for Content Server + components and OOMs UCM_server1 during init.
+      # setDomainEnv.sh honors USER_MEM_ARGS to override ALL mem args. With IBR
+      # disabled there is ample headroom for a 3 GB UCM heap.
+      USER_MEM_ARGS: "-Xms512m -Xmx3072m"
     # Wait for AdminServer to be stable for ~60s before kicking off content bootstrap.
     # Oracle's createDomainandStartAdmin.sh restarts AdminServer after setTopology.py,
     # which races with our stop/start cycle in configureOrStartWebCenterContent.sh
@@ -160,8 +165,18 @@ services:
           fi
           sleep 1
         done
-        echo "AdminServer stable. Starting WCC content bootstrap..."
-        exec /u01/oracle/container-scripts/configureOrStartWebCenterContent.sh
+        echo "AdminServer stable. Starting WCC content bootstrap (IBR disabled)..."
+        # IBR_server1 is not used by this playground and, under arm64 emulation on a
+        # 12 GB host, it balloons (~4 GB RSS) and OOM-kills UCM_server1. Strip the
+        # IBR start/config block from Oracle's bootstrap (keeping UCM start + the
+        # keep-alive) by deleting lines from "export server1=IBR_server1" up to the
+        # "export servers=UCMandIBR" marker. Set START_IBR=true to restore IBR.
+        SRC=/u01/oracle/container-scripts/configureOrStartWebCenterContent.sh
+        if [ "$$START_IBR" = "true" ]; then
+          exec "$$SRC"
+        fi
+        sed '/^export server1=IBR_server1/,/^export servers=UCMandIBR/{/^export servers=UCMandIBR/!d;}' "$$SRC" > /tmp/start-noibr.sh
+        exec bash /tmp/start-noibr.sh
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:16200/weblogic/ready || exit 1"]
       interval: 30s

@@ -28,3 +28,9 @@ user_projects/
 # Build artifacts
 *.log
 logs/
+
+# Volume snapshots (large; created by scripts/snapshot.sh)
+snapshots/
+
+# Local custom WCC components / drop-ins (each kept in its own repo)
+components/
